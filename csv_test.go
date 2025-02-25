@@ -124,7 +124,7 @@ func TestCellValues(t *testing.T) {
 		}
 	}
 
-	csv := Csv{CellLocations: cellLocations[4:], TimeField: TimeField{Cells: []Cell{{Row: 2, Column: 1}}, Layout: "060102T15:04:05"}}
+	csv := Csv{CellLocations: cellLocations[4:], TimeFields: []TimeField{{Name: "@timestamp", Cells: []Cell{{Row: 2, Column: 1}}, Layout: "060102T15:04:05"}}}
 	data, err := csv.ParseRecords(testRecords)
 	if err != nil {
 		t.Fatalf("error parsing records: %v", err)
@@ -228,20 +228,21 @@ YYYY/MM/DD, hh:mm:ss,No.,,Start-up pattern,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,
 	if err != nil {
 		t.Fatalf("failed to create dir: %v", err)
 	}
+
 	tempFile, err := os.CreateTemp(setDir, "LineData_*.csv")
 	if err != nil {
 		t.Fatalf("unable to create temp file: %v", err)
 	}
-	defer func() {
-		if err = tempFile.Close(); err != nil {
-			t.Errorf("unable to close file: %v", err)
-		}
-	}()
 
 	_, err = tempFile.WriteString(input)
 	if err != nil {
 		t.Fatalf("error writing data: %v", err)
 	}
+
+	if err = tempFile.Close(); err != nil {
+		t.Fatalf("unable to close file: %v", err)
+	}
+	expectedFileTime := time.Now()
 
 	csv := Csv{
 		PreProcessor: []Processor{
@@ -294,9 +295,11 @@ YYYY/MM/DD, hh:mm:ss,No.,,Start-up pattern,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,
 			},
 			Delimiter: "_",
 		},
+		StoreFileTime: true,
+		FileTimeName:  "fileTime",
 	}
 
-	output, ids, err := csv.ParseFile(tempFile, tempDir)
+	output, ids, err := csv.ParseFile(tempFile.Name())
 	if err != nil {
 		t.Fatalf("error parsing file: %v", err)
 	}
@@ -326,6 +329,13 @@ YYYY/MM/DD, hh:mm:ss,No.,,Start-up pattern,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,
 
 	if ids[0] != dcm+"_"+timestamp {
 		t.Fatalf("id is incorrect\nExpected: %s\nReceived: %s", dcm+"_"+timestamp, ids[0])
+	}
+
+	fileTime, ok := output[0]["fileTime"]
+	if !ok {
+		t.Fatalf("no fileTime available. Available data: %v", output[0])
+	} else if fileTime != expectedFileTime.Format(time.RFC3339) {
+		t.Errorf("fileTime %s does not match expectedFileTime %s", fileTime, expectedFileTime.Format(time.RFC3339))
 	}
 }
 
@@ -373,20 +383,21 @@ ms,m/s,MPa,mm,KPa
 	if err != nil {
 		t.Fatalf("failed to create dir: %v", err)
 	}
+
 	tempFile, err := os.CreateTemp(setDir, "1234_*.csv")
 	if err != nil {
 		t.Fatalf("unable to create temp file: %v", err)
 	}
-	defer func() {
-		if err = tempFile.Close(); err != nil {
-			t.Errorf("unable to close file: %v", err)
-		}
-	}()
 
 	_, err = tempFile.WriteString(input)
 	if err != nil {
 		t.Fatalf("error writing data: %v", err)
 	}
+
+	if err = tempFile.Close(); err != nil {
+		t.Errorf("unable to close file: %v", err)
+	}
+	expectedFileTime := time.Now()
 
 	csv := Csv{
 		PreProcessor: []Processor{
@@ -472,10 +483,12 @@ ms,m/s,MPa,mm,KPa
 			},
 			Delimiter: "_",
 		},
-		KeepSpaces: true,
+		KeepSpaces:    true,
+		StoreFileTime: true,
+		FileTimeName:  "fileTime",
 	}
 
-	output, ids, err := csv.ParseFile(tempFile, setDir)
+	output, ids, err := csv.ParseFile(tempFile.Name())
 	if err != nil {
 		t.Fatalf("error parsing file: %v", err)
 	}
@@ -524,5 +537,12 @@ ms,m/s,MPa,mm,KPa
 	_, err = json.Marshal(output)
 	if err != nil {
 		t.Fatalf("error marshalling data: %v", err)
+	}
+
+	fileTime, ok := output[0]["fileTime"]
+	if !ok {
+		t.Fatalf("no fileTime available. Available data: %v", output[0])
+	} else if fileTime != expectedFileTime.Format(time.RFC3339) {
+		t.Errorf("fileTime %s does not match expectedFileTime %s", fileTime, expectedFileTime.Format(time.RFC3339))
 	}
 }

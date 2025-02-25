@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 )
@@ -16,10 +15,12 @@ type Csv struct {
 	CellLocations       []CellLocation
 	ConcatCellLocations []ConcatCellLocation
 	TableLocations      []TableLocation
-	TimeField           TimeField
+	TimeFields          []TimeField
 	IdField             IdField
 	FaultOnDuplicate    bool
 	KeepSpaces          bool
+	StoreFileTime       bool
+	FileTimeName        string
 }
 
 func NewCsvFile(cellLocations []CellLocation, concatCellLocations []ConcatCellLocation, tableLocations []TableLocation) *Csv {
@@ -78,7 +79,7 @@ func (c *Csv) Process(file *os.File, filepath string) (result [][]byte, id []str
 		len(c.TableLocations) == 0 {
 		return nil, nil, fmt.Errorf("no settings to process")
 	}
-	res, ids, err := c.ParseFile(file, filepath)
+	res, ids, err := c.ParseFile(filepath)
 	if err != nil {
 		return nil, nil, fmt.Errorf("error parsing csv file %s: %w", file.Name(), err)
 	}
@@ -95,19 +96,33 @@ func (c *Csv) Process(file *os.File, filepath string) (result [][]byte, id []str
 }
 
 // Parse a file and return all the results grouped.
-// Assumes file is open
+//
 // Will output either a map[string]any or []map[string]any
-func (c *Csv) ParseFile(file *os.File, filePath string) ([]map[string]any, []string, error) {
-	fileName := file.Name()
-	if !strings.Contains(fileName, filePath) {
-		fileName = filepath.Join(filePath, fileName)
-	}
-	filePathData, err := c.ParseFileNames(fileName)
+func (c *Csv) ParseFile(filePath string) ([]map[string]any, []string, error) {
+	filePathData, err := c.ParseFileNames(filePath)
 	if err != nil {
 		return nil, nil, fmt.Errorf("error parsing filePath: %w", err)
 	}
 
-	records, err := getRecords(file)
+	if c.StoreFileTime {
+		if c.FileTimeName == "" {
+			return nil, nil, fmt.Errorf("storeFileTime is true but not FileTimeName provided")
+		}
+
+		timeVal, err := getCreationTime(filePath)
+		if err != nil {
+			return nil, nil, fmt.Errorf("cannot get fileTime: %w", err)
+		}
+
+		if c.FaultOnDuplicate {
+			if value, exists := filePathData[c.FileTimeName]; exists {
+				return nil, nil, fmt.Errorf("fileTimeName, %s, already exists in filePathData with value %v", c.FileTimeName, value)
+			}
+		}
+		filePathData[c.FileTimeName] = timeVal.Format(time.RFC3339)
+	}
+
+	records, err := getRecords(filePath)
 	if err != nil {
 		return nil, nil, fmt.Errorf("error getting records: %w", err)
 	}
@@ -237,17 +252,21 @@ func (c *Csv) ParseRecords(records [][]string) (any, error) {
 	}
 
 	// Parse Timestamp
-	if !c.TimeField.IsBlank() {
-		timestamp, err := c.TimeField.Parse(records)
+	for _, timeField := range c.TimeFields {
+		if !timeField.IsBlank() {
+			continue
+		}
+
+		timestamp, err := timeField.Parse(records)
 		if err != nil {
 			return nil, err
 		}
 		if c.FaultOnDuplicate {
-			if value, exists := baseData["@timestamp"]; exists {
+			if value, exists := baseData[timeField.Name]; exists {
 				return nil, fmt.Errorf("duplicate key found for @timestamp with value: %v", value)
 			}
 		}
-		baseData["@timestamp"] = timestamp
+		baseData[timeField.Name] = timestamp.Format(time.RFC3339)
 	}
 
 	var csvData []map[string]any
@@ -301,20 +320,20 @@ func (c *Csv) ParseRecords(records [][]string) (any, error) {
 }
 
 // parse a file and return all results per type of search
-func (c *Csv) ParseRecordsSegmented(records [][]string) (cells map[string]any, concatCells map[string]any, tables map[string]any, timestamp time.Time, err error) {
+func (c *Csv) ParseRecordsSegmented(records [][]string) (cells map[string]any, concatCells map[string]any, tables map[string]any, timestamps map[string]time.Time, err error) {
 	// Parse Cells
 	Cells := make(map[string]any)
 	for _, cellLocation := range c.CellLocations {
 		name, data, err := cellLocation.Parse(records)
 		if err != nil {
-			return nil, nil, nil, time.Time{}, err
+			return nil, nil, nil, nil, err
 		}
 		if !c.KeepSpaces {
 			name = strings.ReplaceAll(name, " ", "_")
 		}
 		if c.FaultOnDuplicate {
 			if _, exists := Cells[name]; exists {
-				return nil, nil, nil, time.Time{}, fmt.Errorf("duplicate data found for cell (%s)", name)
+				return nil, nil, nil, nil, fmt.Errorf("duplicate data found for cell (%s)", name)
 			}
 		}
 		Cells[name] = data
@@ -325,14 +344,14 @@ func (c *Csv) ParseRecordsSegmented(records [][]string) (cells map[string]any, c
 	for _, concatCellLocation := range c.ConcatCellLocations {
 		name, data, err := concatCellLocation.Parse(records)
 		if err != nil {
-			return nil, nil, nil, time.Time{}, err
+			return nil, nil, nil, nil, err
 		}
 		if !c.KeepSpaces {
 			name = strings.ReplaceAll(name, " ", "_")
 		}
 		if c.FaultOnDuplicate {
 			if _, exists := ConcatCells[name]; exists {
-				return nil, nil, nil, time.Time{}, fmt.Errorf("duplicate data found for concatCell (%s)", name)
+				return nil, nil, nil, nil, fmt.Errorf("duplicate data found for concatCell (%s)", name)
 			}
 		}
 		ConcatCells[name] = data
@@ -343,29 +362,47 @@ func (c *Csv) ParseRecordsSegmented(records [][]string) (cells map[string]any, c
 	for _, tableLocation := range c.TableLocations {
 		tableName, tableData, err := tableLocation.Parse(records, c.KeepSpaces)
 		if err != nil {
-			return nil, nil, nil, time.Time{}, err
+			return nil, nil, nil, nil, err
 		}
 		if c.FaultOnDuplicate {
 			if _, exists := Tables[tableName]; exists {
-				return nil, nil, nil, time.Time{}, fmt.Errorf("duplicate data found for table (%s)", tableName)
+				return nil, nil, nil, nil, fmt.Errorf("duplicate data found for table (%s)", tableName)
 			}
 		}
 		Tables[tableName] = tableData
 	}
 
 	// Parse Timestamp
-	if c.TimeField.IsBlank() {
-		return Cells, ConcatCells, Tables, time.Time{}, nil
+	timeFields := make(map[string]time.Time)
+	for _, timeField := range c.TimeFields {
+		if !timeField.IsBlank() {
+			continue
+		}
+
+		timestamp, err := timeField.Parse(records)
+		if err != nil {
+			return nil, nil, nil, nil, err
+		}
+
+		if c.FaultOnDuplicate {
+			if value, exists := timeFields[timeField.Name]; exists {
+				return nil, nil, nil, nil, fmt.Errorf("duplicate key found for timeField %s with value %v", timeField.Name, value)
+			}
+		}
+		timeFields[timeField.Name] = timestamp
 	}
-	timestamp, err = c.TimeField.Parse(records)
-	if err != nil {
-		return nil, nil, nil, time.Time{}, err
-	}
-	return Cells, ConcatCells, Tables, timestamp, nil
+
+	return Cells, ConcatCells, Tables, timeFields, nil
 }
 
-func getRecords(file *os.File) ([][]string, error) {
-	_, err := file.Seek(0, 0)
+func getRecords(filePath string) ([][]string, error) {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("error opening file at path %s: %w", filePath, err)
+	}
+	defer file.Close()
+
+	_, err = file.Seek(0, 0)
 	if err != nil {
 		return nil, fmt.Errorf("error seeking to beginning of file: %w", err)
 	}

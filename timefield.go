@@ -9,6 +9,7 @@ import (
 type TimeField struct {
 	Cells  []Cell // List of cells. Can be concatenated if the time field spans multiple areas
 	Layout string
+	Name   string
 }
 
 func NewTimeField(cells []Cell, Layout string) *TimeField {
