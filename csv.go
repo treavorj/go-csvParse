@@ -71,7 +71,7 @@ func (c *Csv) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-func (c *Csv) Process(file *os.File, filepath string) (result [][]byte, id []string, err error) {
+func (c *Csv) Process(filepath string) (result [][]byte, id []string, err error) {
 	if len(c.FilePathData) == 0 &&
 		len(c.PreProcessor) == 0 &&
 		len(c.CellLocations) == 0 &&
@@ -81,14 +81,14 @@ func (c *Csv) Process(file *os.File, filepath string) (result [][]byte, id []str
 	}
 	res, ids, err := c.ParseFile(filepath)
 	if err != nil {
-		return nil, nil, fmt.Errorf("error parsing csv file %s: %w", file.Name(), err)
+		return nil, nil, fmt.Errorf("error parsing csv file %s: %w", filepath, err)
 	}
 
 	result = make([][]byte, len(res))
 	for n, doc := range res {
 		result[n], err = json.Marshal(doc)
 		if err != nil {
-			return nil, nil, fmt.Errorf("unable to marshal map for file %s: %w", file.Name(), err)
+			return nil, nil, fmt.Errorf("unable to marshal map for file %s: %w", filepath, err)
 		}
 	}
 
